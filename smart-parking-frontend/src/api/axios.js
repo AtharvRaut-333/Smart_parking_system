@@ -2,7 +2,7 @@
 import axios from "axios";
 
 const api = axios.create({
-  baseURL: "https://smart-car-parking-v6in.onrender.com",
+  baseURL: "http://localhost:8081",
   withCredentials: true,
 });
 

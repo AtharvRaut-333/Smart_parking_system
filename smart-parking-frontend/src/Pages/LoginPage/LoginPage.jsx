@@ -30,7 +30,7 @@ const LoginModal = ({ isOpen, onClose }) => {
 
   const googleLogin = () => {
     window.location.href =
-      "https://smart-car-parking-v6in.onrender.com/oauth2/authorization/google?prompt=select_account";
+      "http://localhost:8081/oauth2/authorization/google?prompt=select_account";
   };
 
   const handleSubmit = async (e) => {
@@ -50,8 +50,11 @@ const LoginModal = ({ isOpen, onClose }) => {
           userId: res.data.userId,
         };
 
+        // Store both token and user data in localStorage
         localStorage.setItem("token", res.data.accessToken);
+        localStorage.setItem("user", JSON.stringify(user));
 
+        // Update Redux state
         dispatch(setUser(user));
 
         onClose(); // Close modal first

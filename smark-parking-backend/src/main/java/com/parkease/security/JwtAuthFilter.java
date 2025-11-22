@@ -41,10 +41,7 @@ public class JwtAuthFilter extends OncePerRequestFilter {
     protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response, FilterChain filterChain)
             throws ServletException, IOException {
 
-        // ✅ CORS headers for frontend access
-        response.setHeader("Cross-Origin-Opener-Policy", "same-origin-allow-popups");
-        response.setHeader("Access-Control-Allow-Origin", "https://smart-car-parking-1.onrender.com");
-        response.setHeader("Access-Control-Allow-Credentials", "true");
+        // CORS is handled by SecurityConfig - no manual headers needed
 
         System.out.println("🔄 In JWT filter chain...");
 

@@ -12,7 +12,7 @@ import org.springframework.web.bind.annotation.CrossOrigin;
 
 import io.github.cdimascio.dotenv.Dotenv;
 @SpringBootApplication
-@CrossOrigin(origins = "http://localhost:5173")
+// CORS handled by SecurityConfig
 @EnableJpaRepositories(basePackages = "com.parkease.dao")
 
 @EntityScan(basePackages = "com.parkease.beans")

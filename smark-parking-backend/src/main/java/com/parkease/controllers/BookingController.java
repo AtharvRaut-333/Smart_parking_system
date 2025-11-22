@@ -2,13 +2,22 @@ package com.parkease.controllers;
 
 import java.io.ByteArrayOutputStream;
 
+
 import java.io.IOException;
 import java.time.ZonedDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-
+import org.springframework.messaging.simp.SimpMessagingTemplate;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
+import jakarta.annotation.PostConstruct;
+import jakarta.annotation.PreDestroy;
+import java.util.Map;
+import java.util.Optional;
 import org.apache.http.HttpStatus;
 import org.apache.pdfbox.pdmodel.PDDocument;
 import org.apache.pdfbox.pdmodel.PDPage;
@@ -44,10 +53,24 @@ import com.parkease.dtos.BookingUpdateRequest;
 import com.parkease.dtos.MessageResponse;
 import com.parkease.dtos.StatusUpdateRequest;
 import com.parkease.services.BookingService;
+import java.util.Map;
+import java.util.Optional;
 
 import jakarta.validation.Valid;
 
 import org.springframework.web.bind.annotation.RequestParam;
+import org.springframework.messaging.simp.SimpMessagingTemplate;
+import com.parkease.dtos.SlotUpdateMessage;
+import com.parkease.dtos.ParkingSpaceUpdate;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
+import jakarta.annotation.PostConstruct;
+import jakarta.annotation.PreDestroy;
+
+import com.parkease.dtos.SlotUpdateMessage;
+import com.parkease.dtos.ParkingSpaceUpdate;
 
 
 @RestController
@@ -70,13 +93,37 @@ public class BookingController {
  private ParkingSpaceRepo parkingSpaceRepo;
  @Autowired
  private UserRepository userRepository;;;
+ 
+ @Autowired
+ private SimpMessagingTemplate messagingTemplate;
+ 
 
+
+// Store temporary slot reservations
+private final ConcurrentHashMap<Long, SlotReservation> slotReservations = new ConcurrentHashMap<>();
+private final ScheduledExecutorService scheduler = Executors.newScheduledThreadPool(2);
+
+private static class SlotReservation {
+    Long userId;
+    String userName;
+    Long timestamp;
+    
+    SlotReservation(Long userId, String userName) {
+        this.userId = userId;
+        this.userName = userName;
+        this.timestamp = System.currentTimeMillis();
+    }
+}
     @PostMapping("/{slotId}")
     public ResponseEntity<?> createBooking(@RequestBody BookingRequest bookingReq,@PathVariable Long slotId) {
         
     	System.out.println("lkdl"+bookingReq.getArrivalTime());
     	Booking booking=bookingService.saveBooking(bookingReq,slotId);
     	System.out.println(booking.getId());
+    	
+    	    notifySlotBooked(slotId, bookingReq.getParkingLotId(), bookingReq.getUserId());
+
+    	
         return ResponseEntity.ok(booking);
     }
    @GetMapping("/generateReciept/{bookingId}")
@@ -168,5 +215,119 @@ public class BookingController {
 //           return ResponseEntity.notFound().build();
 //       }
 //   }
+
+    // Real-time slot booking methods
+    
+    @PostMapping("/reserve/{slotId}")
+    public ResponseEntity<?> reserveSlot(@PathVariable Long slotId, @RequestBody Map<String, Object> request) {
+        Long parkingSpaceId = Long.valueOf(request.get("parkingSpaceId").toString());
+        Long userId = Long.valueOf(request.get("userId").toString());
+        String userName = request.get("userName").toString();
+        
+        // Check if slot is available
+        Optional<com.parkease.beans.ParkingSlot> slotOpt = parkingSlotRepository.findById(slotId);
+        if (slotOpt.isEmpty() || !slotOpt.get().isAvailable()) {
+            return ResponseEntity.badRequest().body(new MessageResponse("Slot not available"));
+        }
+        
+        // Check if already reserved
+        if (slotReservations.containsKey(slotId)) {
+            return ResponseEntity.badRequest().body(new MessageResponse("Slot already reserved"));
+        }
+        
+        // Reserve the slot temporarily
+        slotReservations.put(slotId, new SlotReservation(userId, userName));
+        
+        // Schedule timeout to release reservation
+        scheduler.schedule(() -> {
+            if (slotReservations.containsKey(slotId)) {
+                slotReservations.remove(slotId);
+                notifySlotReleased(slotId, parkingSpaceId, "TIMEOUT");
+            }
+        }, 5, TimeUnit.MINUTES);
+        
+        // Notify all clients about reservation
+        notifySlotReserved(slotId, parkingSpaceId, userId, userName);
+        
+        return ResponseEntity.ok(new MessageResponse("Slot reserved successfully"));
+    }
+    
+    @PostMapping("/release/{slotId}")
+    public ResponseEntity<?> releaseSlot(@PathVariable Long slotId, @RequestBody Map<String, Object> request) {
+        Long parkingSpaceId = Long.valueOf(request.get("parkingSpaceId").toString());
+        
+        if (slotReservations.containsKey(slotId)) {
+            slotReservations.remove(slotId);
+            notifySlotReleased(slotId, parkingSpaceId, "RELEASED");
+            return ResponseEntity.ok(new MessageResponse("Slot released successfully"));
+        }
+        
+        return ResponseEntity.badRequest().body(new MessageResponse("Slot not reserved"));
+    }
+    
+    private void notifySlotReserved(Long slotId, Long parkingSpaceId, Long userId, String userName) {
+        SlotUpdateMessage message = new SlotUpdateMessage(slotId, parkingSpaceId, false, "RESERVED");
+        message.setUserId(userId);
+        message.setUserName(userName);
+        
+        messagingTemplate.convertAndSend("/topic/parking-space/" + parkingSpaceId, message);
+        messagingTemplate.convertAndSend("/topic/slots", message);
+    }
+    
+    private void notifySlotBooked(Long slotId, Long parkingSpaceId, Long userId) {
+        // Remove from reservations if it was reserved
+        slotReservations.remove(slotId);
+        
+        SlotUpdateMessage message = new SlotUpdateMessage(slotId, parkingSpaceId, false, "BOOKED");
+        message.setUserId(userId);
+        
+        messagingTemplate.convertAndSend("/topic/parking-space/" + parkingSpaceId, message);
+        messagingTemplate.convertAndSend("/topic/slots", message);
+        
+        // Update parking space availability count
+        updateParkingSpaceAvailability(parkingSpaceId);
+    }
+    
+    private void notifySlotReleased(Long slotId, Long parkingSpaceId, String action) {
+        SlotUpdateMessage message = new SlotUpdateMessage(slotId, parkingSpaceId, true, action);
+        
+        messagingTemplate.convertAndSend("/topic/parking-space/" + parkingSpaceId, message);
+        messagingTemplate.convertAndSend("/topic/slots", message);
+        
+        // Update parking space availability count
+        updateParkingSpaceAvailability(parkingSpaceId);
+    }
+    
+    private void updateParkingSpaceAvailability(Long parkingSpaceId) {
+        try {
+            com.parkease.beans.ParkingSpace parkingSpace = parkingSpaceRepo.findById(parkingSpaceId).orElse(null);
+            if (parkingSpace != null) {
+                long availableSlots = parkingSpace.getParkingSlot().stream()
+                    .mapToLong(slot -> slot.isAvailable() ? 1 : 0)
+                    .sum();
+                
+                ParkingSpaceUpdate update = new ParkingSpaceUpdate(
+                    parkingSpaceId, 
+                    (int) availableSlots, 
+                    parkingSpace.getTotalSlots(), 
+                    "AVAILABILITY_UPDATE"
+                );
+                
+                messagingTemplate.convertAndSend("/topic/parking-spaces", update);
+            }
+        } catch (Exception e) {
+            System.err.println("Error updating parking space availability: " + e.getMessage());
+        }
+    }
+    
+    @PostConstruct
+    public void init() {
+        System.out.println("Real-time booking controller initialized");
+    }
+    
+    @PreDestroy
+    public void cleanup() {
+        scheduler.shutdown();
+    }
     
 }

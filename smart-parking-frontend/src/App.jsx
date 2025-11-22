@@ -1,4 +1,4 @@
-import React from "react";
+import React, { useEffect } from "react";
 import HomePage, { UserHome } from "./Pages/Homepage/HomePage";
 import { BrowserRouter, Route, Routes } from "react-router-dom";
 import Registration from "./Pages/Registration/Registration";
@@ -31,13 +31,27 @@ import PaymentHistory from "./Pages/payment/PaymentHistory";
 import AdminLogin from "./Pages/Admin/AdminLogin";
 import UserPaymentHistory from "./Components/UsePaymentHistory/PaymentHistory";
 import AllPayments from "./Pages/AdminDashBoard/AllPayments";
-import { ToastContainer } from "react-bootstrap";
+import { ToastContainer } from "react-toastify";
+import "react-toastify/dist/ReactToastify.css";
+import { useWebSocket } from "./Hooks/useWebSocket";
+import { useSelector } from "react-redux";
 
 
 const App = () => {
+ const { isConnected } = useWebSocket();
+  const { currentUser } = useSelector(state => state.user);
+
+useEffect(() => {
+  console.log('=== REDUX STATE DEBUG ===');
+  console.log('Current User:', currentUser);
+  console.log('User ID:', currentUser?.userId); // Fix: Use userId
+  console.log('User Name:', currentUser?.fullname || currentUser?.name);
+  console.log('WebSocket connected:', isConnected);
+  console.log('========================');
+}, [currentUser, isConnected]);
   return (
     <BrowserRouter>
-     <ToastContainer position="top-right" autoClose={3000} />
+     <ToastContainer position="top-right" autoClose={3000} hideProgressBar={false} newestOnTop closeOnClick rtl={false} pauseOnFocusLoss draggable pauseOnHover />
       <AuthProvider>
         <Routes>
           <Route path="/" element={<HomePage />}>

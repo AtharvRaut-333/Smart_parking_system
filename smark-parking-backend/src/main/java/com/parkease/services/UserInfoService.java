@@ -53,12 +53,26 @@ public class UserInfoService implements UserDetailsService {
         User user = repository.findByEmail(email)
                 .orElseThrow(() -> new UsernameNotFoundException("User not found"));
 
+        // Debug: Print user roles
+        System.out.println("User roles: " + user.getRoles());
+        
+        // Fix: If user has no roles, assign ROLE_USER
+        if (user.getRoles() == null || user.getRoles().isEmpty()) {
+            System.out.println("⚠️ User has no roles, assigning ROLE_USER");
+            user.setRoles(Set.of(Role.ROLE_USER));
+            repository.save(user); // Save the updated user
+        }
+
+        List<SimpleGrantedAuthority> authorities = user.getRoles().stream()
+                .map((Role role) -> new SimpleGrantedAuthority(role.name()))
+                .collect(Collectors.toList());
+        
+        System.out.println("User authorities: " + authorities);
+
         return new org.springframework.security.core.userdetails.User(
                 user.getEmail(),
                 user.getPassword(),
-                user.getRoles().stream()
-                .map((Role role) -> new SimpleGrantedAuthority(role.name()))
-                 .collect(Collectors.toList())
+                authorities
         );
     }
 

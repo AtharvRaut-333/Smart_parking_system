@@ -16,6 +16,8 @@ import java.util.Set;
 import org.springframework.web.filter.CorsFilter;
 import org.apache.tomcat.util.net.openssl.ciphers.Authentication;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.core.env.Environment;
 
 
 import org.springframework.context.annotation.Bean;
@@ -76,7 +78,12 @@ public class SecurityConfig {
     @Autowired
     private RefreshTokenService refreshTokenService;
     
-   
+    @Autowired
+    private Environment environment;
+    
+    @Value("${app.frontend.url:http://localhost:5173}")
+    private String frontendUrl;
+    
     private final UserInfoService userInfoService;
     @Autowired
     private final UserRepository userRepository;
@@ -104,12 +111,16 @@ public class SecurityConfig {
             .csrf(AbstractHttpConfigurer::disable) // ✅ Disable CSRF for development
             .cors(cors -> cors.configurationSource(corsConfigurationSource())) // ✅ Apply global CORS
             .authorizeHttpRequests(auth -> auth
-                .requestMatchers("/user/login","/user/refresh","/user/success",	"/parkingspaces/getAllParkingSpaces","/parkingowner","parkingowner/{id}/upload-image","/api/payment/getPayments","/api/bookings/download/pdf","/admin/**","/admin/getParkingUsers", "/uploads/**", "/user/register","/user/send","/user/changepassword","/user/verify", "/auth/google/callback").permitAll()
+.requestMatchers("/user/login","/user/refresh","/user/success","/parkingspaces/getAllParkingSpaces","/parkingspaces/**","/parkingowner","parkingowner/{id}/upload-image","/api/payment/getPayments","/api/bookings/download/pdf","/admin/**","/admin/getParkingUsers", "/uploads/**", "/user/register","/user/send","/user/changepassword","/user/verify", "/auth/google/callback", "/ws/**", "/app/**", "/topic/**").permitAll()
        
-                .requestMatchers("/auth/user/**").hasAuthority("USER")
-                .requestMatchers("/api/bookings").hasAuthority("USER")
-                .requestMatchers("/api/bookings").hasAuthority("USER")
-                .requestMatchers("/parkingspaces").hasAuthority("USER")
+                .requestMatchers("/auth/user/**").hasAuthority("ROLE_USER")
+                .requestMatchers("/api/bookings/**").hasAuthority("ROLE_USER")
+                .requestMatchers("/api/payment/**").hasAuthority("ROLE_USER")
+                .requestMatchers("/user/profile").hasAuthority("ROLE_USER")
+                .requestMatchers("/user/getvehiclesInfo/**").hasAuthority("ROLE_USER")
+                .requestMatchers("/user/addvehicle/**").hasAuthority("ROLE_USER")
+                .requestMatchers("/user/updateinfo/**").hasAuthority("ROLE_USER")
+                .requestMatchers("/user/uploadimage").hasAuthority("ROLE_USER")
 //                .requestMatchers("/admin/**").hasAuthority("ADMIN")
                 .anyRequest().authenticated()
             )
@@ -127,25 +138,41 @@ public class SecurityConfig {
     public CorsConfigurationSource corsConfigurationSource() {
         CorsConfiguration configuration = new CorsConfiguration();
         
-        // ✅ Allow React Frontend URL
-        configuration.setAllowedOrigins(List.of("https://smart-car-parking-1.onrender.com"));
+        // Debug: Print active profiles
+        String[] activeProfiles = environment.getActiveProfiles();
+        System.out.println("Active profiles: " + java.util.Arrays.toString(activeProfiles));
+        System.out.println("Is local profile: " + isLocalProfile());
         
-        // ✅ Allow Headers
+        // Only allow local development URLs
+        configuration.setAllowedOrigins(List.of(
+            "http://localhost:5173",
+            "http://localhost:3000", // Docker frontend
+            "http://127.0.0.1:5173",
+            "http://127.0.0.1:3000"
+        ));
+        
+        // Allow Headers
         configuration.setAllowedHeaders(List.of("*"));
         
-        // ✅ Allow Methods
+        // Allow Methods
         configuration.setAllowedMethods(List.of("GET", "POST", "PUT", "DELETE","PATCH", "OPTIONS"));
         
-        // ✅ Allow Credentials (VERY IMPORTANT)
+        // Allow Credentials (VERY IMPORTANT)
         configuration.setAllowCredentials(true);
 
-        // ✅ Apply CORS Config
+        // Apply CORS Config
         UrlBasedCorsConfigurationSource source = new UrlBasedCorsConfigurationSource();
         source.registerCorsConfiguration("/**", configuration);
         return source;
     }
+    
+    private boolean isLocalProfile() {
+        String[] activeProfiles = environment.getActiveProfiles();
+        return activeProfiles.length == 0 || 
+               java.util.Arrays.asList(activeProfiles).contains("local") ||
+               java.util.Arrays.asList(activeProfiles).contains("dev");
+    }
 
-//   @Bean
     @Bean
     public AuthenticationSuccessHandler oAuth2SuccessHandler() {
         return (request, response, authentication) -> {
@@ -183,30 +210,34 @@ public class SecurityConfig {
 
             System.out.println("Generated Token: " + jwtToken);
 
-          
+            // Environment-specific cookie settings
+            boolean isProduction = !isLocalProfile();
+            
             ResponseCookie accessCookie = ResponseCookie.from("token", jwtToken)
                     .httpOnly(true)
-                    .secure(true) // true in production (HTTPS)
+                    .secure(isProduction) // Only secure in production (HTTPS)
                     .path("/")
                     .maxAge(Duration.ofMinutes(15))
-                     .sameSite("None")
-                 
-                 
+                    .sameSite(isProduction ? "None" : "Lax") // None for production, Lax for local
                     .build();
 
             ResponseCookie refreshCookie = ResponseCookie.from("refreshToken", refreshToken)
                     .httpOnly(true)
-                    .secure(true) // true in production
+                    .secure(isProduction) // Only secure in production
                     .path("/")
                     .maxAge(Duration.ofDays(1))
-                    .sameSite("None")
+                    .sameSite(isProduction ? "None" : "Lax")
                     .build();
 
             response.addHeader(HttpHeaders.SET_COOKIE, accessCookie.toString());
             response.addHeader(HttpHeaders.SET_COOKIE, refreshCookie.toString());
 
-          
-            response.sendRedirect("https://smart-car-parking-1.onrender.com/dashboard");
+            // Environment-specific redirect URL
+            String redirectUrl = isLocalProfile() ? 
+                "http://localhost:5173/dashboard" : 
+                "https://smart-car-parking-1.onrender.com/dashboard";
+            
+            response.sendRedirect(redirectUrl);
 
         };
     }

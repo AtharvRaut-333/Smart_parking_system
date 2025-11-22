@@ -14,6 +14,6 @@ public class BookingRequest {
 	    
 	    double amount;
 	    private String carNumber;
-	 
+	
 
 }

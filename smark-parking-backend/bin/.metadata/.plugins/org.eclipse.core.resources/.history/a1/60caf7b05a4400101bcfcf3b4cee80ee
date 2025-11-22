@@ -1,0 +1,39 @@
+package com.parkease.controllers;
+
+import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
+import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.client.RestClientException;
+import org.springframework.web.client.RestTemplate;
+
+@RestController
+@RequestMapping("/api/directions")
+public class DirectionsController {
+
+    private final String OPENROUTE_API_KEY = "5b3ce3597851110001cf62485009d6189dfe4865b7a422b0ab77ba50"; // use env vars ideally
+
+    @GetMapping
+    public ResponseEntity<String> getDirections(
+            @RequestParam double startLat,
+            @RequestParam double startLng,
+            @RequestParam double endLat,
+            @RequestParam double endLng
+    ) {
+        String url = String.format(
+            "https://api.openrouteservice.org/v2/directions/driving-car?api_key=%s&start=%f,%f&end=%f,%f",
+            OPENROUTE_API_KEY, startLng, startLat, endLng, endLat
+        );
+
+        RestTemplate restTemplate = new RestTemplate();
+
+        try {
+            String response = restTemplate.getForObject(url, String.class);
+            return ResponseEntity.ok(response);
+        } catch (RestClientException e) {
+            return ResponseEntity.status(HttpStatus.BAD_GATEWAY).body("Error fetching directions");
+        }
+    }
+}

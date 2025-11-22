@@ -1,5 +1,9 @@
 package com.parkease.dtos;
 
+import lombok.AllArgsConstructor;
+import lombok.Data;
+import lombok.NoArgsConstructor;
+
 public class MessageResponse {
     private String message;
 
@@ -15,3 +19,4 @@ public class MessageResponse {
         this.message = message;
     }
 }
+

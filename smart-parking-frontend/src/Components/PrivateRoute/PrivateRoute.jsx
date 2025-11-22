@@ -8,18 +8,23 @@ const PrivateRoute = () => {
 
   useEffect(() => {
     const localToken = localStorage.getItem("token");
+    const localUser = localStorage.getItem("user");
 
-    if (localToken) {
-      // ✅ Token found in localStorage — trusted login
+    if (localToken && localUser) {
+      // Both token and user data found in localStorage
       setIsAuthenticated(true);
     } else {
-      // 🔁 No localStorage token — check cookie via backend
+      // Check cookie auth as fallback
       const checkCookieAuth = async () => {
         try {
-          alert("from private route");
-          await api.get("/user/success"); 
-          setIsAuthenticated(true);
+          const response = await api.get("/user/success"); 
+          if (response.data) {
+            setIsAuthenticated(true);
+          } else {
+            setIsAuthenticated(false);
+          }
         } catch (err) {
+          console.error("Auth check failed:", err);
           setIsAuthenticated(false);
         }
       };
