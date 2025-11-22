@@ -1,0 +1,170 @@
+pipeline {
+    agent any
+    
+    tools {
+        nodejs 'NodeJS18'
+    }
+    
+    environment {
+        // Nexus Docker Registry
+        NEXUS_DOCKER_REGISTRY = 'localhost:8082'
+        DOCKER_IMAGE_NAME = 'smart-parking-frontend'
+        NEXUS_CREDENTIALS = credentials('nexus-credentials')
+        
+        // SonarQube
+        SONAR_HOST_URL = 'http://localhost:9000'
+        SONAR_TOKEN = credentials('sonarqube-token')
+        SCANNER_HOME = tool 'SonarScanner'
+        
+        // Application
+        APP_NAME = 'smart-parking-frontend'
+        BUILD_VERSION = "${env.BUILD_NUMBER}"
+    }
+    
+    triggers {
+        // Poll SCM every 5 minutes (can be replaced with GitHub webhook)
+        pollSCM('H/5 * * * *')
+    }
+    
+    stages {
+        stage('Checkout') {
+            steps {
+                echo '📥 Checking out code from GitHub...'
+                checkout scm
+                script {
+                    env.GIT_COMMIT_MSG = sh(script: 'git log -1 --pretty=%B', returnStdout: true).trim()
+                    env.GIT_AUTHOR = sh(script: 'git log -1 --pretty=%an', returnStdout: true).trim()
+                }
+            }
+        }
+        
+        stage('Install Dependencies') {
+            steps {
+                echo '📦 Installing npm dependencies...'
+                dir('smart-parking-frontend') {
+                    sh 'npm ci --prefer-offline --no-audit'
+                }
+            }
+        }
+        
+        stage('Lint') {
+            steps {
+                echo '🔍 Running ESLint...'
+                dir('smart-parking-frontend') {
+                    sh 'npm run lint || true'
+                }
+            }
+        }
+        
+        stage('Build') {
+            steps {
+                echo '🔨 Building React application...'
+                dir('smart-parking-frontend') {
+                    sh 'npm run build'
+                }
+            }
+        }
+        
+        stage('SonarQube Analysis') {
+            steps {
+                echo '🔍 Running SonarQube code analysis...'
+                dir('smart-parking-frontend') {
+                    withSonarQubeEnv('SonarQube') {
+                        sh """
+                            ${SCANNER_HOME}/bin/sonar-scanner \
+                                -Dsonar.projectKey=smart-parking-frontend \
+                                -Dsonar.projectName='Smart Parking Frontend' \
+                                -Dsonar.sources=src \
+                                -Dsonar.host.url=${SONAR_HOST_URL} \
+                                -Dsonar.login=${SONAR_TOKEN}
+                        """
+                    }
+                }
+            }
+        }
+        
+        stage('Quality Gate') {
+            steps {
+                echo '🚦 Checking SonarQube Quality Gate...'
+                timeout(time: 5, unit: 'MINUTES') {
+                    waitForQualityGate abortPipeline: true
+                }
+            }
+        }
+        
+        stage('Build Docker Image') {
+            steps {
+                echo '🐳 Building Docker image...'
+                dir('smart-parking-frontend') {
+                    script {
+                        dockerImage = docker.build("${NEXUS_DOCKER_REGISTRY}/${DOCKER_IMAGE_NAME}:${BUILD_VERSION}")
+                        docker.build("${NEXUS_DOCKER_REGISTRY}/${DOCKER_IMAGE_NAME}:latest")
+                    }
+                }
+            }
+        }
+        
+        stage('Push to Nexus Docker Registry') {
+            steps {
+                echo '🚀 Pushing Docker image to Nexus...'
+                script {
+                    docker.withRegistry("http://${NEXUS_DOCKER_REGISTRY}", 'nexus-credentials') {
+                        dockerImage.push("${BUILD_VERSION}")
+                        dockerImage.push("latest")
+                    }
+                }
+            }
+        }
+        
+        stage('Deploy to EC2') {
+            steps {
+                echo '🌐 Deploying to EC2...'
+                script {
+                    // Deploy on same EC2 instance
+                    sh """
+                        docker stop ${APP_NAME} || true
+                        docker rm ${APP_NAME} || true
+                        docker run -d \
+                            --name ${APP_NAME} \
+                            -p 80:80 \
+                            --restart unless-stopped \
+                            ${NEXUS_DOCKER_REGISTRY}/${DOCKER_IMAGE_NAME}:latest
+                    """
+                }
+            }
+        }
+        
+        stage('Health Check') {
+            steps {
+                echo '❤️ Performing health check...'
+                script {
+                    sleep(time: 10, unit: 'SECONDS')
+                    sh """
+                        curl -f http://localhost:80 || exit 1
+                    """
+                }
+            }
+        }
+    }
+    
+    post {
+        success {
+            echo '✅ Pipeline completed successfully!'
+            // Add notification here (email, Slack, etc.)
+        }
+        failure {
+            echo '❌ Pipeline failed!'
+            // Rollback logic
+            script {
+                sh """
+                    docker stop ${APP_NAME} || true
+                    docker rm ${APP_NAME} || true
+                """
+            }
+        }
+        always {
+            echo '🧹 Cleaning up workspace...'
+            cleanWs()
+        }
+    }
+}

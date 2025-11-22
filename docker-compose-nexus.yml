@@ -1,0 +1,31 @@
+version: '3.8'
+
+services:
+  # Nexus Repository Manager
+  nexus:
+    image: sonatype/nexus3:latest
+    container_name: nexus
+    ports:
+      - "8081:8081"  # Nexus UI and Maven repository
+      - "8082:8082"  # Docker registry (hosted)
+    volumes:
+      - nexus-data:/nexus-data
+    environment:
+      - INSTALL4J_ADD_VM_PARAMS=-Xms512m -Xmx1024m -XX:MaxDirectMemorySize=512m
+    networks:
+      - cicd-network
+    restart: unless-stopped
+    # Resource limits for AWS free tier
+    deploy:
+      resources:
+        limits:
+          memory: 1.5G
+        reservations:
+          memory: 512M
+
+volumes:
+  nexus-data:
+
+networks:
+  cicd-network:
+    driver: bridge
