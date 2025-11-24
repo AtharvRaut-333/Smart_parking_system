@@ -1,13 +1,12 @@
 pipeline {
-  agent {
-    kubernetes {
-      yaml """
-apiVersion: v1
-kind: Pod
+    agent {
+        kubernetes {
+            inheritFrom ''
+            yaml '''
 spec:
   containers:
   - name: jnlp
-    image: jenkins/inbound-agent:jdk17
+    image: "jenkins/inbound-agent:jdk17"
     resources:
       limits:
         memory: "2Gi"
@@ -18,14 +17,12 @@ spec:
     volumeMounts:
     - mountPath: "/home/jenkins/agent"
       name: "workspace-volume"
+      readOnly: false
 
   - name: dind
-    image: docker:24-dind
+    image: "docker:dind"
     securityContext:
       privileged: true
-    env:
-      - name: DOCKER_TLS_CERTDIR
-        value: ""
     resources:
       limits:
         memory: "4Gi"
@@ -36,279 +33,260 @@ spec:
     volumeMounts:
     - mountPath: "/home/jenkins/agent"
       name: "workspace-volume"
-
-  - name: docker-cli
-    image: docker:24-cli
-    command:
-    - cat
-    tty: true
-    volumeMounts:
-    - mountPath: "/home/jenkins/agent"
-      name: "workspace-volume"
+      readOnly: false
 
   - name: node
-    image: node:20-alpine
+    image: "node:20-alpine"
     command:
     - sleep
     args:
     - infinity
     resources:
       limits:
-        memory: "1Gi"
+        memory: "3Gi"
         cpu: "1"
       requests:
-        memory: "512Mi"
+        memory: "2Gi"
         cpu: "0.5"
     volumeMounts:
     - mountPath: "/home/jenkins/agent"
       name: "workspace-volume"
+      readOnly: false
 
   volumes:
   - name: "workspace-volume"
     emptyDir: {}
-"""
-    }
-  }
-
-  tools {
-    maven 'maven3'
-    // SonarScanner must be configured in Jenkins Global Tool Configuration with this name
-    // if you prefer a different name, change it here or in Jenkins global config
-    // sonarScanner not required if you use maven sonar:sonar directly with -Dsonar.login
-  }
-
-  environment {
-    NEXUS_DOCKER_REGISTRY = 'nexus.imcc.com:8082'
-    NEXUS_CREDENTIALS_ID = 'nexus-credentials'   // username/password credential in Jenkins
-    SONAR_HOST_URL = 'http://sonarqube.imcc.com'
-    SONAR_CREDENTIALS_ID = 'sonarqube-token'     // secret text in Jenkins
-    NEXUS_URL = 'http://nexus.imcc.com'
-    NEXUS_REPOSITORY = 'maven-snapshots'
-    BUILD_VERSION = "${env.BUILD_NUMBER}"
-    APP_NAME = 'smart-parking-backend'
-  }
-
-  triggers { pollSCM('H/5 * * * *') }
-
-  stages {
-
-    stage('Checkout') {
-      steps {
-        echo "📥 Checking out code..."
-        checkout scm
-        script {
-          env.GIT_COMMIT = sh(script: "git rev-parse --short HEAD", returnStdout: true).trim()
+'''
         }
-      }
     }
 
-    stage('Build & Test') {
-      parallel {
-
-        stage('Backend Pipeline') {
-          stages {
-            stage('Backend: Build') {
-              steps {
-                dir('smark-parking-backend') {
-                  sh 'mvn -B -DskipTests clean compile'
-                }
-              }
-            }
-
-            stage('Backend: SonarQube') {
-              steps {
-                dir('smark-parking-backend') {
-                  withCredentials([string(credentialsId: SONAR_CREDENTIALS_ID, variable: 'SONAR_TOKEN')]) {
-                    sh """
-                      mvn -B sonar:sonar \
-                        -Dsonar.projectKey=smart-parking-backend \
-                        -Dsonar.projectName='Smart Parking Backend' \
-                        -Dsonar.host.url=${SONAR_HOST_URL} \
-                        -Dsonar.login=${SONAR_TOKEN}
-                    """
-                  }
-                }
-              }
-            }
-
-            stage('Backend: Package') {
-              steps {
-                dir('smark-parking-backend') {
-                  sh 'mvn -B -DskipTests package'
-                }
-              }
-            }
-
-            stage('Backend: Deploy to Nexus') {
-              steps {
-                dir('smark-parking-backend') {
-                  sh """
-                    mvn -B deploy -DskipTests \
-                      -DaltDeploymentRepository=nexus::default::${NEXUS_URL}/repository/${NEXUS_REPOSITORY}
-                  """
-                }
-              }
-            }
-
-            stage('Backend: Build Docker Image') {
-              steps {
-                dir('smark-parking-backend') {
-                  // use docker CLI inside docker-cli container (talks to dind via Docker socket)
-                  container('docker-cli') {
-                    sh """
-                      # login handled in next stage; just build and tag locally
-                      docker build -t ${NEXUS_DOCKER_REGISTRY}/smart-parking-backend:${BUILD_VERSION} .
-                      docker tag ${NEXUS_DOCKER_REGISTRY}/smart-parking-backend:${BUILD_VERSION} ${NEXUS_DOCKER_REGISTRY}/smart-parking-backend:latest
-                    """
-                  }
-                }
-              }
-            }
-
-            stage('Backend: Push to Nexus') {
-              steps {
-                container('docker-cli') {
-                  withCredentials([usernamePassword(credentialsId: NEXUS_CREDENTIALS_ID, usernameVariable: 'NEX_USR', passwordVariable: 'NEX_PSW')]) {
-                    sh """
-                      echo "$NEX_PSW" | docker login ${NEXUS_DOCKER_REGISTRY} -u "$NEX_USR" --password-stdin
-                      docker push ${NEXUS_DOCKER_REGISTRY}/smart-parking-backend:${BUILD_VERSION}
-                      docker push ${NEXUS_DOCKER_REGISTRY}/smart-parking-backend:latest
-                    """
-                  }
-                }
-              }
-            }
-          }
-        } // end backend
-
-        stage('Frontend Pipeline') {
-          stages {
-            stage('Frontend: Install') {
-              steps {
-                container('node') {
-                  dir('smart-parking-frontend') {
-                    sh 'npm ci'
-                  }
-                }
-              }
-            }
-
-            stage('Frontend: Lint') {
-              steps {
-                container('node') {
-                  dir('smart-parking-frontend') {
-                    sh 'npm run lint || true'
-                  }
-                }
-              }
-            }
-
-            stage('Frontend: Build') {
-              steps {
-                container('node') {
-                  dir('smart-parking-frontend') {
-                    sh 'CI=false npm run build'
-                  }
-                }
-              }
-            }
-
-            stage('Frontend: SonarQube') {
-              steps {
-                dir('smart-parking-frontend') {
-                  withCredentials([string(credentialsId: SONAR_CREDENTIALS_ID, variable: 'SONAR_TOKEN')]) {
-                    sh """
-                      # using sonar-scanner CLI if installed, otherwise use maven plugin for JS projects
-                      sonar-scanner -Dsonar.projectKey=smart-parking-frontend \
-                                    -Dsonar.projectName='Smart Parking Frontend' \
-                                    -Dsonar.sources=src \
-                                    -Dsonar.host.url=${SONAR_HOST_URL} \
-                                    -Dsonar.login=${SONAR_TOKEN}
-                    """
-                  }
-                }
-              }
-            }
-
-            stage('Frontend: Build Docker Image') {
-              steps {
-                dir('smart-parking-frontend') {
-                  container('docker-cli') {
-                    sh """
-                      docker build -t ${NEXUS_DOCKER_REGISTRY}/smart-parking-frontend:${BUILD_VERSION} .
-                      docker tag ${NEXUS_DOCKER_REGISTRY}/smart-parking-frontend:${BUILD_VERSION} ${NEXUS_DOCKER_REGISTRY}/smart-parking-frontend:latest
-                    """
-                  }
-                }
-              }
-            }
-
-            stage('Frontend: Push to Nexus') {
-              steps {
-                container('docker-cli') {
-                  withCredentials([usernamePassword(credentialsId: NEXUS_CREDENTIALS_ID, usernameVariable: 'NEX_USR', passwordVariable: 'NEX_PSW')]) {
-                    sh """
-                      echo "$NEX_PSW" | docker login ${NEXUS_DOCKER_REGISTRY} -u "$NEX_USR" --password-stdin
-                      docker push ${NEXUS_DOCKER_REGISTRY}/smart-parking-frontend:${BUILD_VERSION}
-                      docker push ${NEXUS_DOCKER_REGISTRY}/smart-parking-frontend:latest
-                    """
-                  }
-                }
-              }
-            }
-
-          }
-        } // end frontend
-      } // end parallel
+    tools {
+        maven 'maven3'
     }
 
-    stage('Quality Gate') {
-      steps {
-        timeout(time: 5, unit: 'MINUTES') {
-          waitForQualityGate abortPipeline: true
+    environment {
+        JAVA_HOME = "/opt/java/openjdk"
+        PATH = "${JAVA_HOME}/bin:${PATH}"
+
+        NEXUS_DOCKER_REGISTRY = 'nexus.imcc.com:8082'
+        NEXUS_CREDENTIALS = credentials('nexus-credentials')
+
+        SONAR_HOST_URL = 'http://sonarqube.imcc.com'
+        SONAR_TOKEN = credentials('sonarqube-token')
+        SCANNER_HOME = tool 'SonarScanner'
+
+        NEXUS_URL = 'http://nexus.imcc.com'
+        NEXUS_REPOSITORY = 'maven-snapshots'
+
+        BUILD_VERSION = "${env.BUILD_NUMBER}"
+    }
+
+    triggers {
+        pollSCM('H/5 * * * *')
+    }
+
+    stages {
+
+        stage('Checkout') {
+            steps {
+                echo '📥 Checking out code...'
+                checkout scm
+                script {
+                    env.GIT_COMMIT_MSG = sh(script: 'git log -1 --pretty=%B', returnStdout: true).trim()
+                    env.GIT_AUTHOR = sh(script: 'git log -1 --pretty=%an', returnStdout: true).trim()
+                }
+            }
         }
-      }
-    }
 
-    stage('Deploy Full Stack') {
-      steps {
-        // NOTE: This runs docker-compose on the Jenkins agent pod — usually you want to deploy to a remote host.
-        // If you want to deploy to remote EC2, replace this with an SSH step that runs docker-compose on the remote host.
-        script {
-          // Example SSH deploy (uncomment and configure if you prefer remote EC2):
-          /*
-          sshagent(['ec2-ssh-cred-id']) {
-            sh "ssh -o StrictHostKeyChecking=no ubuntu@your-ec2-host 'docker pull ${NEXUS_DOCKER_REGISTRY}/smart-parking-backend:latest && docker pull ${NEXUS_DOCKER_REGISTRY}/smart-parking-frontend:latest && docker-compose -f /path/docker-compose.yml up -d --remove-orphans'"
-          }
-          */
-          // Quick local attempt (works only if docker-compose exists in the agent and the agent has Docker host access)
-          container('docker-cli') {
-            sh """
-              docker pull ${NEXUS_DOCKER_REGISTRY}/smart-parking-backend:latest || true
-              docker pull ${NEXUS_DOCKER_REGISTRY}/smart-parking-frontend:latest || true
-              # If you have docker-compose binary inside the pod image, you can run it; otherwise use remote SSH deploy above
-              # docker-compose up -d
-            """
-          }
+        stage('Build & Test') {
+            parallel {
+
+                // Backend Pipeline
+                stage('Backend Pipeline') {
+                    stages {
+
+                        stage('Backend: Build') {
+                            steps {
+                                dir('smark-parking-backend') {
+                                    sh 'mvn clean compile -DskipTests'
+                                }
+                            }
+                        }
+
+
+
+                        stage('Backend: SonarQube') {
+                            steps {
+                                dir('smark-parking-backend') {
+                                    withSonarQubeEnv('sonarqube-2401115') {
+                                        sh """
+                                            mvn sonar:sonar \
+                                                -Dsonar.projectKey=smart-parking-backend \
+                                                -Dsonar.projectName='Smart Parking Backend'
+                                        """
+                                    }
+                                }
+                            }
+                        }
+
+                        stage('Backend: Package') {
+                            steps {
+                                dir('smark-parking-backend') {
+                                    sh 'mvn package -DskipTests'
+                                }
+                            }
+                        }
+
+                        stage('Backend: Deploy to Nexus') {
+                            steps {
+                                dir('smark-parking-backend') {
+                                    sh """
+                                        mvn deploy -DskipTests \
+                                        -DaltDeploymentRepository=nexus::default::${NEXUS_URL}/repository/${NEXUS_REPOSITORY}
+                                    """
+                                }
+                            }
+                        }
+
+                        stage('Backend: Build Docker Image') {
+                            steps {
+                                dir('smark-parking-backend') {
+                                    script {
+                                        env.BACKEND_IMAGE =
+                                            docker.build("${NEXUS_DOCKER_REGISTRY}/smart-parking-backend:${BUILD_VERSION}")
+                                        docker.build("${NEXUS_DOCKER_REGISTRY}/smart-parking-backend:latest")
+                                    }
+                                }
+                            }
+                        }
+
+                        stage('Backend: Push to Nexus') {
+                            steps {
+                                script {
+                                    docker.withRegistry("http://${NEXUS_DOCKER_REGISTRY}", 'nexus-credentials') {
+                                        env.BACKEND_IMAGE.push("${BUILD_VERSION}")
+                                        env.BACKEND_IMAGE.push("latest")
+                                    }
+                                }
+                            }
+                        }
+
+                    }
+                }
+
+                // Frontend Pipeline
+                stage('Frontend Pipeline') {
+                    stages {
+
+                        stage('Frontend: Install') {
+                            steps {
+                                container('node') {
+                                    dir('smart-parking-frontend') {
+                                        sh 'npm ci'
+                                    }
+                                }
+                            }
+                        }
+
+                        stage('Frontend: Lint') {
+                            steps {
+                                container('node') {
+                                    dir('smart-parking-frontend') {
+                                        sh 'npm run lint || true'
+                                    }
+                                }
+                            }
+                        }
+
+                        stage('Frontend: Build') {
+                            steps {
+                                container('node') {
+                                    dir('smart-parking-frontend') {
+                                        sh 'CI=false npm run build'
+                                    }
+                                }
+                            }
+                        }
+
+                        stage('Frontend: SonarQube') {
+                            steps {
+                                dir('smart-parking-frontend') {
+                                    withSonarQubeEnv('sonarqube-2401115') {
+                                        sh """
+                                            ${SCANNER_HOME}/bin/sonar-scanner \
+                                                -Dsonar.projectKey=smart-parking-frontend \
+                                                -Dsonar.projectName='Smart Parking Frontend' \
+                                                -Dsonar.sources=src
+                                        """
+                                    }
+                                }
+                            }
+                        }
+
+                        stage('Frontend: Build Docker Image') {
+                            steps {
+                                dir('smart-parking-frontend') {
+                                    script {
+                                        env.FRONTEND_IMAGE =
+                                            docker.build("${NEXUS_DOCKER_REGISTRY}/smart-parking-frontend:${BUILD_VERSION}")
+                                        docker.build("${NEXUS_DOCKER_REGISTRY}/smart-parking-frontend:latest")
+                                    }
+                                }
+                            }
+                        }
+
+                        stage('Frontend: Push to Nexus') {
+                            steps {
+                                script {
+                                    docker.withRegistry("http://${NEXUS_DOCKER_REGISTRY}", 'nexus-credentials') {
+                                        env.FRONTEND_IMAGE.push("${BUILD_VERSION}")
+                                        env.FRONTEND_IMAGE.push("latest")
+                                    }
+                                }
+                            }
+                        }
+
+                    }
+                }
+
+            }
         }
-      }
+
+        stage('Quality Gate') {
+            steps {
+                timeout(time: 5, unit: 'MINUTES') {
+                    waitForQualityGate abortPipeline: true
+                }
+            }
+        }
+
+        stage('Deploy Full Stack') {
+            steps {
+                sh """
+                    docker-compose down || true
+                    docker pull ${NEXUS_DOCKER_REGISTRY}/smart-parking-backend:latest || true
+                    docker pull ${NEXUS_DOCKER_REGISTRY}/smart-parking-frontend:latest || true
+                    docker-compose up -d
+                """
+            }
+        }
+
+    } // --- END stages ---
+
+    post {
+
+        success {
+            echo "🎉 Smart Parking ${BUILD_VERSION} deployed successfully!"
+        }
+
+        failure {
+            echo "❌ Pipeline failed! Rolling back..."
+            sh "docker-compose down || true"
+        }
+
+        always {
+            echo "🧹 Workspace cleanup skipped (Kubernetes agent auto-cleans)."
+        }
     }
 
-  } // end stages
-
-  post {
-    success {
-      echo "🎉 Smart Parking ${BUILD_VERSION} deployed successfully!"
-    }
-    failure {
-      echo "❌ Pipeline failed! Rolling back..."
-      container('docker-cli') {
-        sh "docker-compose down || true"
-      }
-    }
-    always {
-      echo "🧹 Done"
-    }
-  }
-
-} // end pipeline
+} // --- END pipeline ---
