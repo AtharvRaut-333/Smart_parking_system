@@ -7,9 +7,10 @@ pipeline {
     }
     
     environment {
-        // Nexus Docker Registry (update if different)
-        NEXUS_DOCKER_REGISTRY = 'localhost:8082'
-        DOCKER_IMAGE_NAME = 'smart-parking-backend'
+        // Nexus settings
+        NEXUS_DOCKER_REGISTRY = 'nexus.imcc.com'                         // host only (no path)
+        DOCKER_REPO = 'smart_parking_system_2401169'                     // path-based repo name
+        DOCKER_IMAGE_NAME = "${DOCKER_REPO}/smart-parking-backend"       // full image path used for tagging
         // Jenkins credential ID for Nexus (username/password)
         NEXUS_CREDENTIALS_ID = 'nexus-credentials'
         
@@ -17,8 +18,11 @@ pipeline {
         SONAR_HOST_URL = 'http://localhost:9000'
         SONAR_CREDENTIALS_ID = 'sonarqube-token'
         
-        // Nexus Maven Repository
-        NEXUS_URL = 'http://localhost:8081'
+        // GitHub token credential id (used by multibranch / plugins; not used directly in this Jenkinsfile)
+        GITHUB_CREDENTIALS_ID = 'github-token'
+        
+        // Nexus Maven Repository (for mvn deploy)
+        NEXUS_URL = 'http://nexus.imcc.com'
         NEXUS_REPOSITORY = 'maven-snapshots'
         
         // Application
@@ -73,17 +77,15 @@ pipeline {
             steps {
                 echo '🔍 Running SonarQube code analysis...'
                 dir('smark-parking-backend') {
+                    // Use Jenkins credential ID SONAR_CREDENTIALS_ID to inject the token
                     withCredentials([string(credentialsId: SONAR_CREDENTIALS_ID, variable: 'SONAR_TOKEN')]) {
-                        // If you configured SonarQube server in Jenkins (Manage Jenkins -> SonarQube servers),
-                        // use withSonarQubeEnv('sonarqube') and the plugin-injected token variable.
-                        // The snippet below uses credentials directly for clarity.
-                        sh '''
+                        sh """
                             mvn -B sonar:sonar \
                                 -Dsonar.projectKey=smart-parking-backend \
                                 -Dsonar.projectName="Smart Parking Backend" \
                                 -Dsonar.host.url=${SONAR_HOST_URL} \
                                 -Dsonar.login=${SONAR_TOKEN}
-                        '''
+                        """
                     }
                 }
             }
@@ -92,9 +94,6 @@ pipeline {
         stage('Quality Gate') {
             steps {
                 echo '🚦 Checking SonarQube Quality Gate...'
-                // If you have configured SonarQube in Jenkins and want waitForQualityGate,
-                // replace the above Sonar stage to use withSonarQubeEnv('sonarqube') and then
-                // use waitForQualityGate as below. keep timeout reasonably short for students.
                 timeout(time: 5, unit: 'MINUTES') {
                     waitForQualityGate abortPipeline: true
                 }
@@ -127,7 +126,7 @@ pipeline {
                 echo '🐳 Building Docker image...'
                 dir('smark-parking-backend') {
                     script {
-                        // build single image and tag by both build version and latest
+                        // build image and tag by commit SHA, then tag latest
                         dockerImage = docker.build("${NEXUS_DOCKER_REGISTRY}/${DOCKER_IMAGE_NAME}:${GIT_COMMIT}")
                         sh "docker tag ${NEXUS_DOCKER_REGISTRY}/${DOCKER_IMAGE_NAME}:${GIT_COMMIT} ${NEXUS_DOCKER_REGISTRY}/${DOCKER_IMAGE_NAME}:latest"
                     }
@@ -139,9 +138,10 @@ pipeline {
             steps {
                 echo '🚀 Pushing Docker image to Nexus...'
                 script {
+                    // docker.withRegistry will use the Jenkins credential id to log in
                     docker.withRegistry("http://${NEXUS_DOCKER_REGISTRY}", NEXUS_CREDENTIALS_ID) {
-                        dockerImage.push()
-                        dockerImage.push('latest')
+                        dockerImage.push("${GIT_COMMIT}")
+                        dockerImage.push("latest")
                     }
                 }
             }
@@ -180,7 +180,6 @@ pipeline {
     post {
         success {
             echo '✅ Pipeline completed successfully!'
-            // Add notification here (email, Slack, etc.)
         }
         failure {
             echo '❌ Pipeline failed!'
