@@ -1,11 +1,12 @@
 pipeline {
     agent any
-    
+
     tools {
-        maven 'Maven3'
+        // Use the exact tool names configured in Jenkins Global Tool Configuration
+        maven 'maven3'
         jdk 'JDK17'
     }
-    
+
     environment {
         // Nexus settings
         NEXUS_DOCKER_REGISTRY = 'nexus.imcc.com'                         // host only (no path)
@@ -13,28 +14,28 @@ pipeline {
         DOCKER_IMAGE_NAME = "${DOCKER_REPO}/smart-parking-backend"       // full image path used for tagging
         // Jenkins credential ID for Nexus (username/password)
         NEXUS_CREDENTIALS_ID = 'nexus-credentials'
-        
+
         // SonarQube (Jenkins credential ID for token)
         SONAR_HOST_URL = 'http://localhost:9000'
         SONAR_CREDENTIALS_ID = 'sonarqube-token'
-        
-        // GitHub token credential id (used by multibranch / plugins; not used directly in this Jenkinsfile)
+
+        // GitHub token credential id (used by branch/source plugins; not used directly in this Jenkinsfile)
         GITHUB_CREDENTIALS_ID = 'github-token'
-        
+
         // Nexus Maven Repository (for mvn deploy)
         NEXUS_URL = 'http://nexus.imcc.com'
         NEXUS_REPOSITORY = 'maven-snapshots'
-        
+
         // Application
         APP_NAME = 'smart-parking-backend'
         BUILD_VERSION = "${env.BUILD_NUMBER}"
     }
-    
+
     triggers {
         // Poll SCM every 5 minutes (can be replaced with GitHub webhook)
         pollSCM('H/5 * * * *')
     }
-    
+
     stages {
         stage('Checkout') {
             steps {
@@ -47,7 +48,7 @@ pipeline {
                 }
             }
         }
-        
+
         stage('Build') {
             steps {
                 echo '🔨 Building application with Maven...'
@@ -56,7 +57,7 @@ pipeline {
                 }
             }
         }
-        
+
         stage('Unit Tests') {
             steps {
                 echo '🧪 Running unit tests...'
@@ -72,7 +73,7 @@ pipeline {
                 }
             }
         }
-        
+
         stage('SonarQube Analysis') {
             steps {
                 echo '🔍 Running SonarQube code analysis...'
@@ -90,7 +91,7 @@ pipeline {
                 }
             }
         }
-        
+
         stage('Quality Gate') {
             steps {
                 echo '🚦 Checking SonarQube Quality Gate...'
@@ -99,7 +100,7 @@ pipeline {
                 }
             }
         }
-        
+
         stage('Package') {
             steps {
                 echo '📦 Packaging application...'
@@ -108,7 +109,7 @@ pipeline {
                 }
             }
         }
-        
+
         stage('Deploy to Nexus (Maven)') {
             steps {
                 echo '📤 Deploying artifact to Nexus...'
@@ -120,52 +121,52 @@ pipeline {
                 }
             }
         }
-        
+
         stage('Build Docker Image') {
             steps {
                 echo '🐳 Building Docker image...'
                 dir('smark-parking-backend') {
                     script {
                         // build image and tag by commit SHA, then tag latest
-                        dockerImage = docker.build("${NEXUS_DOCKER_REGISTRY}/${DOCKER_IMAGE_NAME}:${GIT_COMMIT}")
-                        sh "docker tag ${NEXUS_DOCKER_REGISTRY}/${DOCKER_IMAGE_NAME}:${GIT_COMMIT} ${NEXUS_DOCKER_REGISTRY}/${DOCKER_IMAGE_NAME}:latest"
+                        dockerImage = docker.build("${env.NEXUS_DOCKER_REGISTRY}/${env.DOCKER_IMAGE_NAME}:${env.GIT_COMMIT}")
+                        sh "docker tag ${env.NEXUS_DOCKER_REGISTRY}/${env.DOCKER_IMAGE_NAME}:${env.GIT_COMMIT} ${env.NEXUS_DOCKER_REGISTRY}/${env.DOCKER_IMAGE_NAME}:latest"
                     }
                 }
             }
         }
-        
+
         stage('Push to Nexus Docker Registry') {
             steps {
                 echo '🚀 Pushing Docker image to Nexus...'
                 script {
-                    // docker.withRegistry will use the Jenkins credential id to log in
-                    docker.withRegistry("http://${NEXUS_DOCKER_REGISTRY}", NEXUS_CREDENTIALS_ID) {
-                        dockerImage.push("${GIT_COMMIT}")
+                    // Use env.* for registry and credentials id to avoid ambiguous resolution
+                    docker.withRegistry("http://${env.NEXUS_DOCKER_REGISTRY}", env.NEXUS_CREDENTIALS_ID) {
+                        dockerImage.push("${env.GIT_COMMIT}")
                         dockerImage.push("latest")
                     }
                 }
             }
         }
-        
+
         stage('Deploy to EC2') {
             steps {
                 echo '🌐 Deploying to EC2 (local Docker host)...'
                 script {
                     // stop, remove if exists, then run the new image
                     sh """
-                        docker stop ${APP_NAME} || true
-                        docker rm ${APP_NAME} || true
+                        docker stop ${env.APP_NAME} || true
+                        docker rm ${env.APP_NAME} || true
                         docker run -d \
-                            --name ${APP_NAME} \
+                            --name ${env.APP_NAME} \
                             -p 8081:8081 \
                             --restart unless-stopped \
                             -e SPRING_PROFILES_ACTIVE=prod \
-                            ${NEXUS_DOCKER_REGISTRY}/${DOCKER_IMAGE_NAME}:latest
+                            ${env.NEXUS_DOCKER_REGISTRY}/${env.DOCKER_IMAGE_NAME}:latest
                     """
                 }
             }
         }
-        
+
         stage('Health Check') {
             steps {
                 echo '❤️ Performing health check...'
@@ -176,7 +177,7 @@ pipeline {
             }
         }
     }
-    
+
     post {
         success {
             echo '✅ Pipeline completed successfully!'
@@ -186,8 +187,8 @@ pipeline {
             script {
                 // rollback: stop and remove failed container if created
                 sh """
-                    docker stop ${APP_NAME} || true
-                    docker rm ${APP_NAME} || true
+                    docker stop ${env.APP_NAME} || true
+                    docker rm ${env.APP_NAME} || true
                 """
             }
         }
