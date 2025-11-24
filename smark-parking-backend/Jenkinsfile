@@ -7,14 +7,15 @@ pipeline {
     }
     
     environment {
-        // Nexus Docker Registry
+        // Nexus Docker Registry (update if different)
         NEXUS_DOCKER_REGISTRY = 'localhost:8082'
         DOCKER_IMAGE_NAME = 'smart-parking-backend'
-        NEXUS_CREDENTIALS = credentials('nexus-credentials')
+        // Jenkins credential ID for Nexus (username/password)
+        NEXUS_CREDENTIALS_ID = 'nexus-credentials'
         
-        // SonarQube
+        // SonarQube (Jenkins credential ID for token)
         SONAR_HOST_URL = 'http://localhost:9000'
-        SONAR_TOKEN = credentials('sonarqube-token')
+        SONAR_CREDENTIALS_ID = 'sonarqube-token'
         
         // Nexus Maven Repository
         NEXUS_URL = 'http://localhost:8081'
@@ -36,6 +37,7 @@ pipeline {
                 echo '📥 Checking out code from GitHub...'
                 checkout scm
                 script {
+                    env.GIT_COMMIT = sh(script: 'git rev-parse --short HEAD', returnStdout: true).trim()
                     env.GIT_COMMIT_MSG = sh(script: 'git log -1 --pretty=%B', returnStdout: true).trim()
                     env.GIT_AUTHOR = sh(script: 'git log -1 --pretty=%an', returnStdout: true).trim()
                 }
@@ -46,7 +48,7 @@ pipeline {
             steps {
                 echo '🔨 Building application with Maven...'
                 dir('smark-parking-backend') {
-                    sh 'mvn clean compile -DskipTests'
+                    sh 'mvn -B -DskipTests clean compile'
                 }
             }
         }
@@ -55,7 +57,7 @@ pipeline {
             steps {
                 echo '🧪 Running unit tests...'
                 dir('smark-parking-backend') {
-                    sh 'mvn test'
+                    sh 'mvn -B test'
                 }
             }
             post {
@@ -71,14 +73,17 @@ pipeline {
             steps {
                 echo '🔍 Running SonarQube code analysis...'
                 dir('smark-parking-backend') {
-                    withSonarQubeEnv('SonarQube') {
-                        sh """
-                            mvn sonar:sonar \
+                    withCredentials([string(credentialsId: SONAR_CREDENTIALS_ID, variable: 'SONAR_TOKEN')]) {
+                        // If you configured SonarQube server in Jenkins (Manage Jenkins -> SonarQube servers),
+                        // use withSonarQubeEnv('sonarqube') and the plugin-injected token variable.
+                        // The snippet below uses credentials directly for clarity.
+                        sh '''
+                            mvn -B sonar:sonar \
                                 -Dsonar.projectKey=smart-parking-backend \
-                                -Dsonar.projectName='Smart Parking Backend' \
+                                -Dsonar.projectName="Smart Parking Backend" \
                                 -Dsonar.host.url=${SONAR_HOST_URL} \
                                 -Dsonar.login=${SONAR_TOKEN}
-                        """
+                        '''
                     }
                 }
             }
@@ -87,6 +92,9 @@ pipeline {
         stage('Quality Gate') {
             steps {
                 echo '🚦 Checking SonarQube Quality Gate...'
+                // If you have configured SonarQube in Jenkins and want waitForQualityGate,
+                // replace the above Sonar stage to use withSonarQubeEnv('sonarqube') and then
+                // use waitForQualityGate as below. keep timeout reasonably short for students.
                 timeout(time: 5, unit: 'MINUTES') {
                     waitForQualityGate abortPipeline: true
                 }
@@ -97,21 +105,19 @@ pipeline {
             steps {
                 echo '📦 Packaging application...'
                 dir('smark-parking-backend') {
-                    sh 'mvn package -DskipTests'
+                    sh 'mvn -B -DskipTests package'
                 }
             }
         }
         
-        stage('Deploy to Nexus') {
+        stage('Deploy to Nexus (Maven)') {
             steps {
                 echo '📤 Deploying artifact to Nexus...'
                 dir('smark-parking-backend') {
-                    script {
-                        sh """
-                            mvn deploy -DskipTests \
-                                -DaltDeploymentRepository=nexus::default::${NEXUS_URL}/repository/${NEXUS_REPOSITORY}
-                        """
-                    }
+                    sh """
+                        mvn -B deploy -DskipTests \
+                            -DaltDeploymentRepository=nexus::default::${NEXUS_URL}/repository/${NEXUS_REPOSITORY}
+                    """
                 }
             }
         }
@@ -121,8 +127,9 @@ pipeline {
                 echo '🐳 Building Docker image...'
                 dir('smark-parking-backend') {
                     script {
-                        dockerImage = docker.build("${NEXUS_DOCKER_REGISTRY}/${DOCKER_IMAGE_NAME}:${BUILD_VERSION}")
-                        docker.build("${NEXUS_DOCKER_REGISTRY}/${DOCKER_IMAGE_NAME}:latest")
+                        // build single image and tag by both build version and latest
+                        dockerImage = docker.build("${NEXUS_DOCKER_REGISTRY}/${DOCKER_IMAGE_NAME}:${GIT_COMMIT}")
+                        sh "docker tag ${NEXUS_DOCKER_REGISTRY}/${DOCKER_IMAGE_NAME}:${GIT_COMMIT} ${NEXUS_DOCKER_REGISTRY}/${DOCKER_IMAGE_NAME}:latest"
                     }
                 }
             }
@@ -132,9 +139,9 @@ pipeline {
             steps {
                 echo '🚀 Pushing Docker image to Nexus...'
                 script {
-                    docker.withRegistry("http://${NEXUS_DOCKER_REGISTRY}", 'nexus-credentials') {
-                        dockerImage.push("${BUILD_VERSION}")
-                        dockerImage.push("latest")
+                    docker.withRegistry("http://${NEXUS_DOCKER_REGISTRY}", NEXUS_CREDENTIALS_ID) {
+                        dockerImage.push()
+                        dockerImage.push('latest')
                     }
                 }
             }
@@ -142,9 +149,9 @@ pipeline {
         
         stage('Deploy to EC2') {
             steps {
-                echo '🌐 Deploying to EC2...'
+                echo '🌐 Deploying to EC2 (local Docker host)...'
                 script {
-                    // Deploy on same EC2 instance
+                    // stop, remove if exists, then run the new image
                     sh """
                         docker stop ${APP_NAME} || true
                         docker rm ${APP_NAME} || true
@@ -163,10 +170,8 @@ pipeline {
             steps {
                 echo '❤️ Performing health check...'
                 script {
-                    sleep(time: 30, unit: 'SECONDS')
-                    sh """
-                        curl -f http://localhost:8081/actuator/health || exit 1
-                    """
+                    sleep(time: 15, unit: 'SECONDS')
+                    sh 'curl -f http://localhost:8081/actuator/health || exit 1'
                 }
             }
         }
@@ -179,12 +184,11 @@ pipeline {
         }
         failure {
             echo '❌ Pipeline failed!'
-            // Rollback logic
             script {
+                // rollback: stop and remove failed container if created
                 sh """
                     docker stop ${APP_NAME} || true
                     docker rm ${APP_NAME} || true
-                    # Optionally pull and run previous stable version
                 """
             }
         }
