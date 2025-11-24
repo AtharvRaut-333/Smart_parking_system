@@ -8,31 +8,20 @@ pipeline {
     }
 
     environment {
-        // Nexus settings
-        NEXUS_DOCKER_REGISTRY = 'nexus.imcc.com'                         // host only (no path)
-        DOCKER_REPO = 'smart_parking_system_2401169'                     // path-based repo name
-        DOCKER_IMAGE_NAME = "${DOCKER_REPO}/smart-parking-backend"       // full image path used for tagging
-        // Jenkins credential ID for Nexus (username/password)
+        NEXUS_DOCKER_REGISTRY = 'nexus.imcc.com'
+        DOCKER_REPO = 'smart_parking_system_2401169'
+        DOCKER_IMAGE_NAME = "${DOCKER_REPO}/smart-parking-backend"
         NEXUS_CREDENTIALS_ID = 'nexus-credentials'
-
-        // SonarQube (Jenkins credential ID for token)
         SONAR_HOST_URL = 'http://localhost:9000'
         SONAR_CREDENTIALS_ID = 'sonarqube-token'
-
-        // GitHub token credential id (used by branch/source plugins; not used directly in this Jenkinsfile)
         GITHUB_CREDENTIALS_ID = 'github-token'
-
-        // Nexus Maven Repository (for mvn deploy)
         NEXUS_URL = 'http://nexus.imcc.com'
         NEXUS_REPOSITORY = 'maven-snapshots'
-
-        // Application
         APP_NAME = 'smart-parking-backend'
         BUILD_VERSION = "${env.BUILD_NUMBER}"
     }
 
     triggers {
-        // Poll SCM every 5 minutes (can be replaced with GitHub webhook)
         pollSCM('H/5 * * * *')
     }
 
@@ -78,7 +67,6 @@ pipeline {
             steps {
                 echo '🔍 Running SonarQube code analysis...'
                 dir('smark-parking-backend') {
-                    // Use Jenkins credential ID SONAR_CREDENTIALS_ID to inject the token
                     withCredentials([string(credentialsId: SONAR_CREDENTIALS_ID, variable: 'SONAR_TOKEN')]) {
                         sh """
                             mvn -B sonar:sonar \
@@ -127,7 +115,6 @@ pipeline {
                 echo '🐳 Building Docker image...'
                 dir('smark-parking-backend') {
                     script {
-                        // build image and tag by commit SHA, then tag latest
                         dockerImage = docker.build("${env.NEXUS_DOCKER_REGISTRY}/${env.DOCKER_IMAGE_NAME}:${env.GIT_COMMIT}")
                         sh "docker tag ${env.NEXUS_DOCKER_REGISTRY}/${env.DOCKER_IMAGE_NAME}:${env.GIT_COMMIT} ${env.NEXUS_DOCKER_REGISTRY}/${env.DOCKER_IMAGE_NAME}:latest"
                     }
@@ -139,7 +126,6 @@ pipeline {
             steps {
                 echo '🚀 Pushing Docker image to Nexus...'
                 script {
-                    // Use env.* for registry and credentials id to avoid ambiguous resolution
                     docker.withRegistry("http://${env.NEXUS_DOCKER_REGISTRY}", env.NEXUS_CREDENTIALS_ID) {
                         dockerImage.push("${env.GIT_COMMIT}")
                         dockerImage.push("latest")
@@ -152,7 +138,6 @@ pipeline {
             steps {
                 echo '🌐 Deploying to EC2 (local Docker host)...'
                 script {
-                    // stop, remove if exists, then run the new image
                     sh """
                         docker stop ${env.APP_NAME} || true
                         docker rm ${env.APP_NAME} || true
@@ -179,13 +164,10 @@ pipeline {
     }
 
     post {
-        success {
-            echo '✅ Pipeline completed successfully!'
-        }
+        success { echo '✅ Pipeline completed successfully!' }
         failure {
             echo '❌ Pipeline failed!'
             script {
-                // rollback: stop and remove failed container if created
                 sh """
                     docker stop ${env.APP_NAME} || true
                     docker rm ${env.APP_NAME} || true
